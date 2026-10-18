@@ -1,0 +1,110 @@
+# Ports of the most wanted mods for a new Minecraft version, built and booted on GitHub's
+# runners. Lives in its own public repository and organization (tools/port_ci/README.md), so a
+# flag on heavy Actions use there never stops the Modkeel organization's releases.
+#
+# Each mod runs what `modkeel get` runs (official build, older build that still links, forks and
+# community ports, relaxed range) and boots a server with the result. Results are JSON only: no
+# jar is uploaded here, publishing a port stays a separate, reviewed step.
+name: port
+
+on:
+  workflow_dispatch:
+    inputs:
+      mc:
+        description: Minecraft version
+        required: true
+      loader:
+        description: fabric, neoforge or forge
+        required: true
+        default: fabric
+      mods:
+        description: JSON list of Modrinth slugs; empty = the most downloaded with no build
+        default: ""
+      limit:
+        description: How many mods when picking them
+        default: "20"
+
+permissions:
+  contents: read
+
+env:
+  MODKEEL: "0.1.12"
+
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mods: ${{ steps.pick.outputs.mods }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - id: pick
+        env:
+          MC: ${{ inputs.mc }}
+          LOADER: ${{ inputs.loader }}
+          MODS: ${{ inputs.mods }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          if [ -z "$MODS" ]; then
+            MODS=$(python candidates.py "$MC" "$LOADER" --limit "$LIMIT" | jq -c '[.[].slug]')
+          fi
+          echo "mods=$MODS" >> "$GITHUB_OUTPUT"
+          echo "Mods: $MODS" >> "$GITHUB_STEP_SUMMARY"
+
+  port:
+    needs: pick
+    if: needs.pick.outputs.mods != '[]'
+    runs-on: ubuntu-latest
+    # the mods' own Gradle builds run here: no secrets in this job, the token reads only
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      # GITHUB_TOKEN allows 1000 API calls an hour per repository; fork searches share it
+      max-parallel: 8
+      matrix:
+        mod: ${{ fromJSON(needs.pick.outputs.mods) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "modkeel==$MODKEEL"
+      - name: Get and boot
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MODKEEL_HOME: ${{ runner.temp }}/modkeel
+        run: python port_job.py "${{ matrix.mod }}" "${{ inputs.mc }}" "${{ inputs.loader }}" --out out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ matrix.mod }}
+          path: out/result.json
+          if-no-files-found: ignore
+
+  summary:
+    needs: port
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: results
+          merge-multiple: false
+      - name: Table
+        run: |
+          jq -c . results/*/result.json > results.jsonl
+          {
+            echo "| Mod | Result | Source | Version | Minutes |"
+            echo "|---|---|---|---|---:|"
+            jq -r '"| \(.mod) | \(if .ok then "ok" else "none" end) | \(.source // "-") | \(.version // "-") | \(.seconds / 60 | floor) |"' results.jsonl
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: results.jsonl
