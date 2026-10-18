@@ -28,7 +28,7 @@ permissions:
   contents: read
 
 env:
-  MODKEEL: "0.1.12"
+  MODKEEL: "0.1.13"
 
 jobs:
   pick:
