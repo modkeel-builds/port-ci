@@ -72,7 +72,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install "modkeel==$MODKEEL"
+      # a release minutes old may not be on the runners' PyPI index yet
+      - run: |
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            pip install "modkeel==$MODKEEL" && exit 0
+            sleep 30
+          done
+          exit 1
       - name: Get and boot
         env:
           GITHUB_TOKEN: ${{ github.token }}
